@@ -1,16 +1,17 @@
-use crate::app::{CosmicPortal, OutputState};
+use crate::app::CosmicPortal;
 use crate::fl;
 use crate::wayland::{CaptureSource, WaylandHelper};
-use crate::widget::{keyboard_wrapper::KeyboardWrapper, screenshot::MyImage};
+use crate::widget::keyboard_wrapper::KeyboardWrapper;
 use ashpd::{desktop::screencast::SourceType, enumflags2::BitFlags};
 use cosmic::desktop::IconSource;
 use cosmic::iced::{
     self,
     keyboard::{key::Named, Key},
-    window, Limits,
+    window,
 };
-use cosmic::iced_runtime::command::platform_specific::wayland::layer_surface::SctkLayerSurfaceSettings;
-use cosmic::iced_sctk::commands::layer_surface::{
+
+use cosmic::iced_runtime::platform_specific::wayland::layer_surface::SctkLayerSurfaceSettings;
+use cosmic::iced_winit::commands::layer_surface::{
     destroy_layer_surface, get_layer_surface, KeyboardInteractivity, Layer,
 };
 use cosmic::{theme, widget};
@@ -20,8 +21,6 @@ use cosmic_protocols::toplevel_info::v1::client::zcosmic_toplevel_handle_v1::Zco
 use freedesktop_desktop_entry as fde;
 use freedesktop_desktop_entry::{get_languages_from_env, DesktopEntry};
 use once_cell::sync::Lazy;
-use std::fs;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use wayland_client::protocol::wl_output::WlOutput;
 
@@ -41,7 +40,7 @@ pub async fn show_screencast_prompt(
         .toplevels()
         .into_iter()
         .map(|(handle, info)| {
-            let icon = get_desktop_entry(&desktop_entries, &info.app_id)
+            let icon = fde::matching::find_entry_from_appid(desktop_entries.iter(), &info.app_id)
                 .and_then(|x| Some(x.icon()?.to_owned()));
             (handle, info, icon)
         })
@@ -58,16 +57,12 @@ pub async fn show_screencast_prompt(
             .await
             .and_then(|image| image.image().ok())
             .map(|image| {
-                widget::image::Handle::from_pixels(
-                    image.width(),
-                    image.height(),
-                    MyImage(Arc::new(image)),
-                )
+                widget::image::Handle::from_rgba(image.width(), image.height(), image.into_vec())
             });
         outputs.push((output, info, image));
     }
 
-    let app_name = get_desktop_entry(&desktop_entries, &app_id)
+    let app_name = fde::matching::find_entry_from_appid(desktop_entries.iter(), &app_id)
         .and_then(|x| Some(x.name(&locales)?.into_owned()));
 
     let (tx, mut rx) = mpsc::channel(1);
@@ -99,14 +94,14 @@ async fn load_desktop_entries(locales: &[String]) -> Vec<DesktopEntry<'static>> 
     entries
 }
 
-fn get_desktop_entry<'a>(
-    entries: &'a [DesktopEntry<'a>],
-    id: &str,
-) -> Option<&'a DesktopEntry<'a>> {
-    fde::matching::get_best_match(&[id], &entries, fde::matching::MatchAppIdOptions::default())
-}
+// fn get_desktop_entry<'a>(
+//     entries: &'a [DesktopEntry<'a>],
+//     id: &str,
+// ) -> Option<&'a DesktopEntry<'a>> {
+//     fde::matching::get_best_match(&[id], &entries, fde::matching::MatchAppIdOptions::default())
+// }
 
-fn create_dialog() -> cosmic::Command<crate::app::Msg> {
+fn create_dialog() -> cosmic::Task<crate::app::Msg> {
     get_layer_surface(SctkLayerSurfaceSettings {
         id: *SCREENCAST_ID,
         keyboard_interactivity: KeyboardInteractivity::Exclusive,
@@ -166,9 +161,9 @@ fn active_tab(portal: &CosmicPortal) -> Tab {
     *portal.screencast_tab_model.active_data::<Tab>().unwrap()
 }
 
-pub fn update_msg(portal: &mut CosmicPortal, msg: Msg) -> cosmic::Command<crate::app::Msg> {
+pub fn update_msg(portal: &mut CosmicPortal, msg: Msg) -> cosmic::Task<crate::app::Msg> {
     let Some(args) = portal.screencast_args.as_mut() else {
-        return cosmic::Command::none();
+        return cosmic::Task::none();
     };
 
     match msg {
@@ -211,7 +206,7 @@ pub fn update_msg(portal: &mut CosmicPortal, msg: Msg) -> cosmic::Command<crate:
                 let response = args.capture_sources;
                 tokio::spawn(async move {
                     if let Err(err) = tx.send(Some(response)).await {
-                        log::error!("Failed to send screencast event");
+                        log::error!("Failed to send screencast event: {err:?}");
                     }
                 });
                 return destroy_layer_surface(*SCREENCAST_ID);
@@ -222,18 +217,18 @@ pub fn update_msg(portal: &mut CosmicPortal, msg: Msg) -> cosmic::Command<crate:
                 let tx = args.tx;
                 tokio::spawn(async move {
                     if let Err(err) = tx.send(None).await {
-                        log::error!("Failed to send screencast event");
+                        log::error!("Failed to send screencast event {err:?}");
                     }
                 });
                 return destroy_layer_surface(*SCREENCAST_ID);
             }
         }
     }
-    cosmic::Command::none()
+    cosmic::Task::none()
 }
 
-pub fn update_args(portal: &mut CosmicPortal, args: Args) -> cosmic::Command<crate::app::Msg> {
-    let mut command = cosmic::Command::none();
+pub fn update_args(portal: &mut CosmicPortal, args: Args) -> cosmic::Task<crate::app::Msg> {
+    let mut command = cosmic::Task::none();
     if portal.screencast_args.is_none() {
         portal.screencast_tab_model.clear();
         if args.source_types.contains(SourceType::Monitor) {
@@ -261,9 +256,9 @@ fn output_button_appearance(
     theme: &cosmic::Theme,
     is_active: bool,
     hovered: bool,
-) -> widget::button::Appearance {
+) -> widget::button::Style {
     let cosmic = theme.cosmic();
-    let mut appearance = widget::button::Appearance::new();
+    let mut appearance = widget::button::Style::new();
     appearance.border_radius = cosmic.corner_radii.radius_s.into();
     if is_active {
         appearance.border_width = 2.0;
@@ -281,9 +276,9 @@ fn output_button<'a>(
     image_handle: Option<&'a widget::image::Handle>,
     msg: Msg,
 ) -> cosmic::Element<'a, Msg> {
-    let text = widget::text(label).style(theme::style::Text::Custom(|theme| {
+    let text = widget::text(label).class(theme::style::Text::Custom(|theme| {
         let container = theme.current_container();
-        cosmic::iced_core::widget::text::Appearance {
+        cosmic::iced_core::widget::text::Style {
             color: Some(container.on.into()),
         }
     }));
@@ -300,11 +295,11 @@ fn output_button<'a>(
     children.push(row.into());
     let column = widget::column::with_children(children).spacing(12);
 
-    widget::button(column)
+    widget::button::custom(column)
         .width(iced::Length::Fill)
         .padding(8)
         .selected(is_selected)
-        .style(cosmic::theme::Button::Custom {
+        .class(cosmic::theme::Button::Custom {
             active: Box::new(move |_focused, theme| {
                 output_button_appearance(theme, is_selected, false)
             }),
@@ -326,18 +321,18 @@ fn toplevel_button(
     icon: IconSource,
     msg: Msg,
 ) -> cosmic::Element<Msg> {
-    let text = widget::text(label).style(theme::style::Text::Custom(|theme| {
+    let text = widget::text(label).class(theme::style::Text::Custom(|theme| {
         let container = theme.current_container();
-        cosmic::iced_core::widget::text::Appearance {
+        cosmic::iced_core::widget::text::Style {
             color: Some(container.on.into()),
         }
     }));
-    let button = widget::button(text)
+    let button = widget::button::custom(text)
         .width(iced::Length::Fill)
         .padding(0)
         // TODO hover style? Etc.
         // .style(theme::style::Button::Text)
-        .style(theme::style::Button::Transparent)
+        .class(theme::style::Button::Transparent)
         .selected(is_selected)
         .on_press(msg);
     let mut children = Vec::new();
@@ -352,11 +347,13 @@ fn toplevel_button(
 
 pub(crate) fn view(portal: &CosmicPortal) -> cosmic::Element<Msg> {
     let Some(args) = portal.screencast_args.as_ref() else {
-        return widget::horizontal_space(iced::Length::Fixed(1.0)).into();
+        return widget::horizontal_space()
+            .width(iced::Length::Fixed(1.0))
+            .into();
     };
     let cancel_button = widget::button::standard(fl!("cancel")).on_press(Msg::Cancel);
     let mut share_button =
-        widget::button::standard(fl!("share")).style(cosmic::style::Button::Suggested);
+        widget::button::standard(fl!("share")).class(cosmic::style::Button::Suggested);
     if !args.capture_sources.is_empty() {
         share_button = share_button.on_press(Msg::Share);
     }

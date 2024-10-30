@@ -161,7 +161,7 @@ impl ScreenCast {
         };
 
         // XXX
-        let mut outputs = self.wayland_helper.outputs();
+        let outputs = self.wayland_helper.outputs();
         if outputs.is_empty() {
             log::error!("No output");
             return PortalResponse::Other;
